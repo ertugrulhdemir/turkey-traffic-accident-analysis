@@ -30,6 +30,18 @@ def tr_sort_key(s):
         result = result.replace(old, new)
     return result.lower()
 
+def fmt(n):
+    """Format large numbers as 1.2M, 45K etc."""
+    try:
+        n = int(round(float(n)))
+    except:
+        return str(n)
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.0f}K"
+    return str(n)
+
 st.markdown("""
 <style>
     html, body, [class*="css"] { font-size: 16px; }
@@ -495,8 +507,15 @@ with tab4:
         col_k1, col_k2 = st.columns(2)
         with col_k1:
             last = fault_df[fault_df['year'] == 2025].iloc[0]
+            total = last['driver'] + last['passenger'] + last['pedestrian'] + last['road'] + last['vehicle']
             pie_df = pd.DataFrame({
-                'Fault Type': ['Driver', 'Passenger', 'Pedestrian', 'Road', 'Vehicle'],
+                'Fault Type': [
+                    f"Driver ({last['driver']/total*100:.1f}%)",
+                    f"Passenger ({last['passenger']/total*100:.1f}%)",
+                    f"Pedestrian ({last['pedestrian']/total*100:.1f}%)",
+                    f"Road ({last['road']/total*100:.1f}%)",
+                    f"Vehicle ({last['vehicle']/total*100:.1f}%)"
+                ],
                 'Count': [last['driver'], last['passenger'], last['pedestrian'], last['road'], last['vehicle']]
             })
             fig = px.pie(pie_df, values='Count', names='Fault Type',
@@ -571,7 +590,7 @@ with tab5:
         forecast_df['pred_accidents'] = pred_acc
         actual_2025 = yearly[yearly['year'] == 2025]['total_accidents'].values[0]
         change_acc = (pred_acc[0] - actual_2025) / actual_2025 * 100
-        st.metric("2026 Predicted Accidents", f"{pred_acc[0]:,.0f}", f"{change_acc:+.1f}% vs 2025")
+        st.metric("2026 Predicted Accidents", fmt(pred_acc[0]), f"{change_acc:+.1f}% vs 2025")
 
 
         fig = go.Figure()
@@ -602,7 +621,7 @@ with tab5:
 
         actual_2025_d = yearly[yearly['year'] == 2025]['deaths'].values[0]
         change_dth = (final_deaths[0] - actual_2025_d) / actual_2025_d * 100
-        st.metric("2026 Predicted Deaths", f"{final_deaths[0]:,.0f}", f"{change_dth:+.1f}% vs 2025")
+        st.metric("2026 Predicted Deaths", fmt(final_deaths[0]), f"{change_dth:+.1f}% vs 2025")
         st.caption("Method: Chained prediction (accidents × fatal rate) + direct model blend")
 
         fig2 = go.Figure()
@@ -715,29 +734,47 @@ with tab5:
 
     if len(prov_data_trend) >= 3:
         X_prov = prov_data_trend['year'].values.reshape(-1, 1)
+        
+        # Accident forecast
         lr_prov = LinearRegression()
         lr_prov.fit(X_prov, prov_data_trend['total_accidents'].values)
         prov_forecasts = lr_prov.predict([[y] for y in forecast_years])
+        
+        # Death forecast
+        lr_prov_deaths = LinearRegression()
+        lr_prov_deaths.fit(X_prov, prov_data_trend['deaths'].values)
+        prov_death_forecasts = lr_prov_deaths.predict([[y] for y in forecast_years])
+        prov_death_forecasts = [max(0, int(round(v))) for v in prov_death_forecasts]
 
         actual_prov_2025 = prov_data_trend[prov_data_trend['year'] == 2025]['total_accidents'].values
         if len(actual_prov_2025) > 0:
             change_prov = (prov_forecasts[0] - actual_prov_2025[0]) / actual_prov_2025[0] * 100
-            st.metric(f"{prov_pred_sel} — 2026 Accident Forecast",
-                      f"{prov_forecasts[0]:,.0f}", f"{change_prov:+.1f}% vs 2025")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                st.metric(f"{prov_pred_sel} — 2026 Accident Forecast",
+                          f"{int(round(prov_forecasts[0])):,}", f"{change_prov:+.1f}% vs 2025")
+            with col_p2:
+                actual_deaths_2025 = prov_data_trend[prov_data_trend['year'] == 2025]['deaths'].values
+                if len(actual_deaths_2025) > 0:
+                    change_deaths = (prov_death_forecasts[0] - actual_deaths_2025[0]) / actual_deaths_2025[0] * 100
+                    st.metric(f"{prov_pred_sel} — 2026 Death Forecast",
+                              f"{prov_death_forecasts[0]:,}", f"{change_deaths:+.1f}% vs 2025")
 
         fig3 = go.Figure()
-        fig3.add_trace(go.Bar(x=prov_data_trend['year'], y=prov_data_trend['total_accidents'],
+        fig3.add_trace(go.Bar(x=prov_data_trend['year'], y=prov_data_trend['total_accidents'].astype(int),
                               name='Actual', marker_color='steelblue'))
-        fig3.add_trace(go.Bar(x=forecast_years, y=prov_forecasts,
+        fig3.add_trace(go.Bar(x=forecast_years, y=[int(round(v)) for v in prov_forecasts],
                               name='Forecast', marker_color='red', opacity=0.7))
         fig3.update_layout(title=f'{prov_pred_sel} — Annual Accidents & 2026–2030 Forecast',
-                           xaxis_title='Year', yaxis_title='Accidents', barmode='overlay')
+                           xaxis_title='Year', yaxis_title='Accidents', barmode='overlay',
+                           yaxis=dict(tickformat=',d'))
         st.plotly_chart(fig3, use_container_width=True)
 
         # Province forecast table
         prov_forecast_table = pd.DataFrame({
             'Year': forecast_years,
-            'Predicted Accidents': [f"{v:,.0f}" for v in prov_forecasts]
+            'Predicted Accidents': [f"{int(round(v)):,}" for v in prov_forecasts],
+            'Predicted Deaths': [f"{v:,}" for v in prov_death_forecasts]
         })
         st.dataframe(prov_forecast_table, use_container_width=True, hide_index=True)
 
@@ -798,6 +835,12 @@ with tab6:
                     'deaths_per_1000': ':,.2f',
                     'geo_name': False
                 },
+                labels={
+                    'total_accidents': 'Total Accidents',
+                    'deaths': 'Deaths',
+                    'deaths_per_1000': 'Deaths per 1,000 Acc.',
+                    'geo_name': ''
+                },
                 color_continuous_scale=color_scales[map_metric],
                 title=f'Turkey — {map_metric} by Province (2025)'
             )
@@ -823,6 +866,7 @@ with tab7:
     who_countries = who_countries[~who_countries['SpatialDim'].isin(['AFR','AMR','EMR','EUR','SEAR','WPR','GLOBAL'])]
     who_countries = who_countries.sort_values('NumericValue', ascending=False).reset_index(drop=True)
     who_countries['rank'] = who_countries.index + 1
+    who_countries['country_name'] = who_countries['SpatialDim'].apply(get_country_name)
 
     tur_row = who_countries[who_countries['SpatialDim'] == 'TUR'].iloc[0]
     tur_rank = int(tur_row['rank'])
@@ -842,7 +886,17 @@ with tab7:
 
     fig_who = px.choropleth(who_countries, locations='SpatialDim', color='NumericValue',
                         color_continuous_scale='Reds',
-                        title=f'Road Traffic Death Rate per 100k Population ({latest_year})')
+                        title=f'Road Traffic Death Rate per 100k Population ({latest_year})',
+                        hover_name='country_name',
+                        hover_data={
+                            'NumericValue': ':.1f',
+                            'SpatialDim': False,
+                            'rank': True
+                        },
+                        labels={
+                            'NumericValue': 'Deaths per 100k',
+                            'rank': 'World Rank'
+                        })
 
     fig_who.add_trace(px.choropleth(
         who_countries[who_countries['SpatialDim'] == 'TUR'],
